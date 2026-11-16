@@ -56,7 +56,6 @@ __all__ = (
     "Fusion",
     "DynamicShuffleUnit",
     "C2f_Faster",
-    "DySample",
     "ShuffleUnit"
 )
 
@@ -388,87 +387,3 @@ class Fusion(nn.Module):
             fusion_weight = self.relu(self.fusion_weight.clone())
             fusion_weight = fusion_weight / (torch.sum(fusion_weight, dim=0))
             return torch.sum(torch.stack([fusion_weight[i] * x[i] for i in range(len(x))], dim=0), dim=0)
-
-class DySample(nn.Module):
-    """
-    equ:
-        X' = grid_sample(X, S)
-        S  = G + O
-        O  = 0.5 * sigmoid(linear1(X)) ⊙ linear2(X)
-    params:
-        in_channels: C
-        scale: s
-        groups: g
-    """
-    def __init__(self, in_channels: int, scale: int = 2, groups: int = 4):
-        super().__init__()
-        self.scale = int(scale)
-        self.groups = int(groups)
-        s = self.scale
-        # Output channels: 2 * g * s²  (2 represents the xy coordinates)
-        out_dim = 2 * groups * (s ** 2)
-
-        # Two independent linear branches (1×1 convolution)
-        self.linear1 = nn.Conv2d(in_channels, out_dim, kernel_size=1, bias=True)
-        self.linear2 = nn.Conv2d(in_channels, out_dim, kernel_size=1, bias=True)
-
-        # Initialisation
-        nn.init.normal_(self.linear1.weight, std=0.001)
-        nn.init.normal_(self.linear2.weight, std=0.001)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = x.shape
-        s = self.scale
-        g = self.groups
-
-        # -------- Step1:Generate an offset using a two-branch approach: O = 0.5*sigmoid(linear1(X)) ⊙ linear2(X) --------
-        feat1 = self.linear1(x)   # (B, 2gs², H, W)
-        feat2 = self.linear2(x)   # (B, 2gs², H, W)
-
-        branch1 = 0.5 * torch.sigmoid(feat1)
-        O_lowres = branch1 * feat2   # (B,2gs²,H,W)
-
-        # -------- Step2:Apply a pixel_shuffle to offset O, increasing the resolution to  sH × sW --------
-        O = F.pixel_shuffle(O_lowres, upscale_factor=s)  # (B, 2g, s*H, s*W)
-        sH, sW = s * H, s * W
-
-        # -------- Step3: G (sH × sW) --------
-        grid_y, grid_x = torch.meshgrid(
-            torch.arange(sH, device=x.device),
-            torch.arange(sW, device=x.device),
-            indexing="ij"
-        )
-        # G: [sH, sW, 2]
-        G = torch.stack([grid_x, grid_y], dim=-1).float()
-        G = G.unsqueeze(0)  # (1, sH, sW, 2)
-
-        # (B,2g,sH,sW) -> (B,g,sH,sW,2)
-        B_, C_O, H_O, W_O = O.shape
-        O = O.view(B_, g, 2, H_O, W_O).permute(0,1,3,4,2) # (B, g, sH, sW, 2)
-
-        # -------- Step4:Sampling set S = G + O --------
-        G = G.unsqueeze(1) # (1,1,sH,sW,2)
-        S = G + O   # (B, g, sH, sW, 2)
-
-        # grid_sample must be normalised to the range  [-1, 1]
-        S[..., 0] = 2.0 * S[..., 0] / (sW - 1) - 1.0
-        S[..., 1] = 2.0 * S[..., 1] / (sH - 1) - 1.0
-        S = S.to(x.dtype)
-
-        # -------- Step5:Grouped into grid_sample; each group of channels shares a single sample set S --------
-        x_group = x.view(B, g, C//g, H, W) 
-        out_list = []
-        for gi in range(g):
-            xg = x_group[:, gi, ...]    # (B, Cg, H, W)
-            sg = S[:, gi, ...]          # (B, sH, sW, 2)
-
-            sampled = F.grid_sample(
-                xg, sg,
-                mode="bilinear",
-                padding_mode="zeros",
-                align_corners=False
-            )
-            out_list.append(sampled)
-
-        out = torch.cat(out_list, dim=1) # (B, C, sH, sW)
-        return out
