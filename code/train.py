@@ -4,7 +4,7 @@ from ultralytics import YOLO
 if __name__ == "__main__":
     ROOT = Path(__file__).resolve().parent
 
-    model = YOLO(str(ROOT / "SFBD-YOLOv8.yaml"))
+    model = YOLO(str(ROOT / "SFB-YOLOv8.yaml"))
 
     model.train(
         data=str(ROOT / "Laboro_Tomato.yaml"),
@@ -20,5 +20,5 @@ if __name__ == "__main__":
         deterministic=True,
         amp=True,
         project=str(ROOT / "runs" / "Laboro"),
-        name="SFBD-YOLOv8",
+        name="SFB-YOLOv8",
     )
