@@ -71,7 +71,6 @@ from ultralytics.nn.modules import (
     Fusion,
     DynamicShuffleUnit,
     C2f_Faster,
-    DySample,
     ShuffleUnit
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, LOGGER, YAML, colorstr, emojis
@@ -1592,9 +1591,6 @@ def parse_model(d, ch, verbose=True):
             if "torchvision.ops." in m
             else globals()[m]
         )  # get module
-        if m is DySample:
-            in_channels = ch[f]
-            args = [in_channels, *args]
         for j, a in enumerate(args):
             if isinstance(a, str):
                 with contextlib.suppress(ValueError):
